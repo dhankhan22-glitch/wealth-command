@@ -37,24 +37,43 @@ def save_categories(df_cat):
 def load_data():
     if os.path.exists(DATA_FILE):
         df = pd.read_csv(DATA_FILE)
-        # Backward compatibility: if the User column doesn't exist yet, add it
+        # Ensure older data has the new required columns
         if "User" not in df.columns:
-            df["User"] = "Dhanesh" # Default old transactions
+            df["User"] = "Dhanesh"
+        if "ID" not in df.columns:
+            df.insert(0, "ID", range(1, len(df) + 1))
         return df
     else:
-        return pd.DataFrame(columns=["Date", "Amount", "Category", "Notes", "User"])
+        return pd.DataFrame(columns=["ID", "Date", "Amount", "Category", "Notes", "User"])
 
-def save_transaction(date, amount, category, notes, user):
-    df = load_data()
-    new_data = pd.DataFrame({"Date": [date], "Amount": [amount], "Category": [category], "Notes": [notes], "User": [user]})
-    df = pd.concat([df, new_data], ignore_index=True)
+def save_data(df):
     df.to_csv(DATA_FILE, index=False)
+
+def save_transaction(t_date, amount, category, notes, user):
+    df = load_data()
+    # Generate a new unique ID for safe deletion
+    new_id = 1 if df.empty else df["ID"].max() + 1
+    new_data = pd.DataFrame({
+        "ID": [new_id], 
+        "Date": [t_date], 
+        "Amount": [amount], 
+        "Category": [category], 
+        "Notes": [notes], 
+        "User": [user]
+    })
+    df = pd.concat([df, new_data], ignore_index=True)
+    save_data(df)
+
+def delete_transaction(tx_id):
+    df = load_data()
+    df = df[df["ID"] != tx_id]
+    save_data(df)
 
 # --- APP NAVIGATION ---
 st.sidebar.title("Wealth Command")
-page = st.sidebar.radio("Navigation", ["Dashboard", "Log Transaction", "Manage Categories"])
+page = st.sidebar.radio("Navigation", ["Dashboard", "Log Transaction", "Manage Ledger", "Manage Categories"])
 
-# Load data into memory
+# Load core data
 df = load_data()
 df_cat = load_categories()
 category_list = df_cat["Category"].tolist()
@@ -66,22 +85,19 @@ if page == "Dashboard":
     if df.empty:
         st.info("No transactions logged yet. Head over to 'Log Transaction' to get started.")
     else:
-        # User Toggle
         st.write("### 👤 Select View")
         view_options = ["Combined Household"] + HOUSEHOLD_USERS
         selected_view = st.pills("Filter Dashboard", view_options, default="Combined Household")
         
-        # Filter Data based on toggle
         if selected_view == "Combined Household":
             display_df = df
-            income_budget = 160000  # Adjust combined income here if needed
+            income_budget = 160000 
         else:
             display_df = df[df["User"] == selected_view]
-            income_budget = 80000   # Individual income baseline
+            income_budget = 80000
 
         total_spend = display_df["Amount"].sum()
         
-        # KPI Cards
         col1, col2, col3 = st.columns(3)
         col1.metric(f"Budget Baseline ({selected_view})", f"₹{income_budget:,}")
         col2.metric("Total Expenses Logged", f"₹{total_spend:,.2f}")
@@ -89,7 +105,6 @@ if page == "Dashboard":
         
         st.markdown("---")
         
-        # Visual Analytics
         if not display_df.empty:
             st.subheader(f"Compartmentalization Breakdown: {selected_view}")
             category_sum = display_df.groupby("Category")["Amount"].sum().reset_index()
@@ -98,9 +113,10 @@ if page == "Dashboard":
         else:
             st.warning(f"No transactions found for {selected_view}.")
         
-        # Ledger View
         st.subheader("Recent Ledger Entries")
-        st.dataframe(display_df.tail(10).sort_values(by="Date", ascending=False), use_container_width=True)
+        # Hide the ID column on the dashboard so it stays clean
+        display_clean = display_df.drop(columns=["ID"]).sort_values(by="Date", ascending=False)
+        st.dataframe(display_clean.head(10), use_container_width=True)
 
 # --- PAGE 2: LOG TRANSACTION ---
 elif page == "Log Transaction":
@@ -125,7 +141,39 @@ elif page == "Log Transaction":
             save_transaction(t_date, t_amount, t_cat, t_notes, t_user)
             st.success(f"Successfully logged ₹{t_amount} for {t_user} under '{t_cat}'!")
 
-# --- PAGE 3: MANAGE CATEGORIES ---
+# --- PAGE 3: MANAGE LEDGER (Delete Option) ---
+elif page == "Manage Ledger":
+    st.title("🗑️ Manage Ledger")
+    
+    if df.empty:
+        st.info("No transactions to manage.")
+    else:
+        st.markdown("Select a transaction below to permanently delete it.")
+        
+        # Sort so newest is at the top
+        df_sorted = df.sort_values(by=["ID"], ascending=False)
+        
+        def format_tx(row):
+            return f"ID {row.ID} | {row.Date} | {row.User} | ₹{row.Amount} | {row.Category} | {row.Notes}"
+            
+        tx_options = {row.ID: format_tx(row) for row in df_sorted.itertuples()}
+        
+        selected_id = st.selectbox(
+            "Select Transaction to Delete", 
+            options=list(tx_options.keys()), 
+            format_func=lambda x: tx_options[x]
+        )
+        
+        if st.button("Delete Selected Transaction", type="primary"):
+            delete_transaction(selected_id)
+            st.success("Transaction deleted successfully!")
+            st.rerun()
+            
+        st.markdown("---")
+        st.write("### Full Database View")
+        st.dataframe(df_sorted, use_container_width=True)
+
+# --- PAGE 4: MANAGE CATEGORIES ---
 elif page == "Manage Categories":
     st.title("⚙️ Manage Categories")
     st.markdown("Double-click a cell to edit a name. Scroll to the bottom to add a new one. Select a row on the left to delete it.")
@@ -136,4 +184,4 @@ elif page == "Manage Categories":
         edited_df = edited_df.dropna(subset=["Category"])
         edited_df = edited_df[edited_df["Category"].str.strip() != ""]
         save_categories(edited_df)
-        st.success("Categories updated successfully! The new list is now live in your Quick Logger.")
+        st.success("Categories updated successfully!")

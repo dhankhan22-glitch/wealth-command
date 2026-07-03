@@ -2,18 +2,17 @@ import streamlit as st
 import pandas as pd
 import plotly.express as px
 import os
+import json
 from datetime import datetime, date
-import calendar
 
 # --- CONFIGURATION ---
 st.set_page_config(page_title="Wealth Command", page_icon="🏦", layout="wide", initial_sidebar_state="collapsed")
 DATA_FILE = "expense_database.csv"
 CAT_FILE = "categories.csv"
+INCOMES_FILE = "incomes.json"
 
 # --- DEFAULT SETTINGS ---
 HOUSEHOLD_USERS = ["Dhanesh", "Yamini"]
-INCOME_HOUSEHOLD = 160000
-INCOME_INDIVIDUAL = 80000
 
 DEFAULT_CATEGORIES = [
     "1. Housing, Rent & EMIs",
@@ -27,7 +26,22 @@ DEFAULT_CATEGORIES = [
     "9. Medical & Healthcare"
 ]
 
+DEFAULT_INCOMES = {
+    "Dhanesh": 80000,
+    "Yamini": 80000
+}
+
 # --- DATA HANDLING ---
+def load_incomes():
+    if os.path.exists(INCOMES_FILE):
+        with open(INCOMES_FILE, "r") as f:
+            return json.load(f)
+    return DEFAULT_INCOMES
+
+def save_incomes(incomes_dict):
+    with open(INCOMES_FILE, "w") as f:
+        json.dump(incomes_dict, f)
+
 def load_categories():
     if os.path.exists(CAT_FILE):
         return pd.read_csv(CAT_FILE)
@@ -41,12 +55,11 @@ def load_data():
         df = pd.read_csv(DATA_FILE)
         if "User" not in df.columns: df["User"] = "Dhanesh"
         if "ID" not in df.columns: df.insert(0, "ID", range(1, len(df) + 1))
-        df['Date'] = pd.to_datetime(df['Date']) # Ensure date format
+        df['Date'] = pd.to_datetime(df['Date']) 
         return df
     return pd.DataFrame(columns=["ID", "Date", "Amount", "Category", "Notes", "User"])
 
 def save_data(df):
-    # Convert dates back to string for clean CSV saving
     df['Date'] = df['Date'].dt.strftime('%Y-%m-%d')
     df.to_csv(DATA_FILE, index=False)
 
@@ -70,6 +83,7 @@ def delete_transaction(tx_id):
 df = load_data()
 df_cat = load_categories()
 category_list = df_cat["Category"].tolist()
+incomes = load_incomes()
 
 # --- HEADER ---
 st.markdown("<h1 style='text-align: center; color: #1F4E78;'>🏦 Wealth Command</h1>", unsafe_allow_html=True)
@@ -93,11 +107,9 @@ with tab_dash:
         # --- Filters ---
         col_f1, col_f2, col_f3 = st.columns(3)
         
-        # Get unique months and years for filtering
         df['Month_Year'] = df['Date'].dt.strftime('%b %Y')
         month_options = df['Month_Year'].unique().tolist()
         
-        # Default to current month if it exists in data, else latest
         current_my = datetime.now().strftime('%b %Y')
         default_my = current_my if current_my in month_options else month_options[0]
 
@@ -107,17 +119,22 @@ with tab_dash:
             view_options = ["Combined Household"] + HOUSEHOLD_USERS
             selected_view = st.selectbox("👤 Select View", view_options)
         
-        # Apply Filters
+        # Dynamic Budget Logic based on Incomes
         filtered_df = df[df['Month_Year'] == selected_month]
-        if selected_view != "Combined Household":
-            filtered_df = filtered_df[filtered_df["User"] == selected_view]
-            budget_baseline = INCOME_INDIVIDUAL
+        if selected_view == "Combined Household":
+            budget_baseline = sum(incomes.values())
         else:
-            budget_baseline = INCOME_HOUSEHOLD
+            filtered_df = filtered_df[filtered_df["User"] == selected_view]
+            budget_baseline = incomes.get(selected_view, 80000)
             
         total_spent = filtered_df["Amount"].sum()
         remaining = budget_baseline - total_spent
-        percent_spent = min((total_spent / budget_baseline) * 100, 100)
+        
+        # Prevent division by zero if income is set to 0
+        if budget_baseline > 0:
+            percent_spent = min((total_spent / budget_baseline) * 100, 100)
+        else:
+            percent_spent = 0.0
 
         # --- High-Level KPIs ---
         st.markdown("<br>", unsafe_allow_html=True)
@@ -160,7 +177,7 @@ with tab_dash:
 # ==========================================
 with tab_log:
     st.subheader("Add a New Transaction")
-    with st.form("transaction_form", clear_on_submit=True): # Form clears automatically!
+    with st.form("transaction_form", clear_on_submit=True):
         col_l1, col_l2 = st.columns(2)
         with col_l1:
             t_user = st.radio("Spender", HOUSEHOLD_USERS, horizontal=True)
@@ -188,9 +205,8 @@ with tab_ledger:
     if df.empty:
         st.info("Ledger is empty.")
     else:
-        # Display clean dataframe
         df_clean = df.copy()
-        df_clean['Date'] = df_clean['Date'].dt.strftime('%Y-%m-%d') # Format for display
+        df_clean['Date'] = df_clean['Date'].dt.strftime('%Y-%m-%d')
         df_sorted = df_clean.sort_values(by=["Date", "ID"], ascending=[False, False])
         
         st.dataframe(df_sorted.drop(columns=["Month_Year"], errors='ignore'), use_container_width=True)
@@ -211,7 +227,22 @@ with tab_ledger:
 # TAB 4: SETTINGS
 # ==========================================
 with tab_settings:
-    st.subheader("Customize Categories")
+    st.subheader("💰 Income Settings")
+    st.markdown("Adjust your monthly baselines below. The 'Combined Household' view will automatically sum these two numbers.")
+    
+    col_inc1, col_inc2 = st.columns(2)
+    with col_inc1:
+        new_dhanesh = st.number_input("Dhanesh's Monthly Income (₹)", min_value=0, step=1000, value=incomes.get("Dhanesh", 80000))
+    with col_inc2:
+        new_yamini = st.number_input("Yamini's Monthly Income (₹)", min_value=0, step=1000, value=incomes.get("Yamini", 80000))
+        
+    if st.button("Save Income Changes"):
+        save_incomes({"Dhanesh": new_dhanesh, "Yamini": new_yamini})
+        st.success("Incomes updated! The dashboard will now use these baselines.")
+        st.rerun()
+
+    st.markdown("---")
+    st.subheader("⚙️ Customize Categories")
     st.info("Double-click a cell to rename. Scroll to the bottom to add. Select the row number on the left and press delete on your keyboard to remove.")
     
     edited_df = st.data_editor(df_cat, num_rows="dynamic", use_container_width=True)
@@ -222,4 +253,3 @@ with tab_settings:
         save_categories(edited_df)
         st.success("Categories updated! The changes are now live.")
         st.rerun()
-    

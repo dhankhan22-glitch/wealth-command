@@ -2,15 +2,18 @@ import streamlit as st
 import pandas as pd
 import plotly.express as px
 import os
-from datetime import date
+from datetime import datetime, date
+import calendar
 
 # --- CONFIGURATION ---
-st.set_page_config(page_title="Wealth Command", layout="wide", initial_sidebar_state="expanded")
+st.set_page_config(page_title="Wealth Command", page_icon="🏦", layout="wide", initial_sidebar_state="collapsed")
 DATA_FILE = "expense_database.csv"
 CAT_FILE = "categories.csv"
 
 # --- DEFAULT SETTINGS ---
 HOUSEHOLD_USERS = ["Dhanesh", "Yamini"]
+INCOME_HOUSEHOLD = 160000
+INCOME_INDIVIDUAL = 80000
 
 DEFAULT_CATEGORIES = [
     "1. Housing, Rent & EMIs",
@@ -28,8 +31,7 @@ DEFAULT_CATEGORIES = [
 def load_categories():
     if os.path.exists(CAT_FILE):
         return pd.read_csv(CAT_FILE)
-    else:
-        return pd.DataFrame({"Category": DEFAULT_CATEGORIES})
+    return pd.DataFrame({"Category": DEFAULT_CATEGORIES})
 
 def save_categories(df_cat):
     df_cat.to_csv(CAT_FILE, index=False)
@@ -37,29 +39,24 @@ def save_categories(df_cat):
 def load_data():
     if os.path.exists(DATA_FILE):
         df = pd.read_csv(DATA_FILE)
-        # Ensure older data has the new required columns
-        if "User" not in df.columns:
-            df["User"] = "Dhanesh"
-        if "ID" not in df.columns:
-            df.insert(0, "ID", range(1, len(df) + 1))
+        if "User" not in df.columns: df["User"] = "Dhanesh"
+        if "ID" not in df.columns: df.insert(0, "ID", range(1, len(df) + 1))
+        df['Date'] = pd.to_datetime(df['Date']) # Ensure date format
         return df
-    else:
-        return pd.DataFrame(columns=["ID", "Date", "Amount", "Category", "Notes", "User"])
+    return pd.DataFrame(columns=["ID", "Date", "Amount", "Category", "Notes", "User"])
 
 def save_data(df):
+    # Convert dates back to string for clean CSV saving
+    df['Date'] = df['Date'].dt.strftime('%Y-%m-%d')
     df.to_csv(DATA_FILE, index=False)
 
 def save_transaction(t_date, amount, category, notes, user):
     df = load_data()
-    # Generate a new unique ID for safe deletion
     new_id = 1 if df.empty else df["ID"].max() + 1
     new_data = pd.DataFrame({
-        "ID": [new_id], 
-        "Date": [t_date], 
-        "Amount": [amount], 
-        "Category": [category], 
-        "Notes": [notes], 
-        "User": [user]
+        "ID": [new_id], "Date": [pd.to_datetime(t_date)], 
+        "Amount": [amount], "Category": [category], 
+        "Notes": [notes], "User": [user]
     })
     df = pd.concat([df, new_data], ignore_index=True)
     save_data(df)
@@ -69,119 +66,160 @@ def delete_transaction(tx_id):
     df = df[df["ID"] != tx_id]
     save_data(df)
 
-# --- APP NAVIGATION ---
-st.sidebar.title("Wealth Command")
-page = st.sidebar.radio("Navigation", ["Dashboard", "Log Transaction", "Manage Ledger", "Manage Categories"])
-
-# Load core data
+# --- LOAD CORE DATA ---
 df = load_data()
 df_cat = load_categories()
 category_list = df_cat["Category"].tolist()
 
-# --- PAGE 1: DASHBOARD ---
-if page == "Dashboard":
-    st.title("🎯 Monthly Command Center")
-    
+# --- HEADER ---
+st.markdown("<h1 style='text-align: center; color: #1F4E78;'>🏦 Wealth Command</h1>", unsafe_allow_html=True)
+st.markdown("---")
+
+# --- TOP NAVIGATION TABS ---
+tab_dash, tab_log, tab_ledger, tab_settings = st.tabs([
+    "📊 Monthly Dashboard", 
+    "📝 Log Expense", 
+    "📂 Manage Ledger", 
+    "⚙️ Settings & Categories"
+])
+
+# ==========================================
+# TAB 1: DASHBOARD
+# ==========================================
+with tab_dash:
     if df.empty:
-        st.info("No transactions logged yet. Head over to 'Log Transaction' to get started.")
+        st.info("No data yet! Go to 'Log Expense' to make your first entry.")
     else:
-        st.write("### 👤 Select View")
-        view_options = ["Combined Household"] + HOUSEHOLD_USERS
-        selected_view = st.pills("Filter Dashboard", view_options, default="Combined Household")
+        # --- Filters ---
+        col_f1, col_f2, col_f3 = st.columns(3)
         
-        if selected_view == "Combined Household":
-            display_df = df
-            income_budget = 160000 
-        else:
-            display_df = df[df["User"] == selected_view]
-            income_budget = 80000
+        # Get unique months and years for filtering
+        df['Month_Year'] = df['Date'].dt.strftime('%b %Y')
+        month_options = df['Month_Year'].unique().tolist()
+        
+        # Default to current month if it exists in data, else latest
+        current_my = datetime.now().strftime('%b %Y')
+        default_my = current_my if current_my in month_options else month_options[0]
 
-        total_spend = display_df["Amount"].sum()
+        with col_f1:
+            selected_month = st.selectbox("📅 Select Month", month_options, index=month_options.index(default_my))
+        with col_f2:
+            view_options = ["Combined Household"] + HOUSEHOLD_USERS
+            selected_view = st.selectbox("👤 Select View", view_options)
         
-        col1, col2, col3 = st.columns(3)
-        col1.metric(f"Budget Baseline ({selected_view})", f"₹{income_budget:,}")
-        col2.metric("Total Expenses Logged", f"₹{total_spend:,.2f}")
-        col3.metric("Remaining Balance", f"₹{income_budget - total_spend:,.2f}")
-        
-        st.markdown("---")
-        
-        if not display_df.empty:
-            st.subheader(f"Compartmentalization Breakdown: {selected_view}")
-            category_sum = display_df.groupby("Category")["Amount"].sum().reset_index()
-            fig = px.pie(category_sum, values='Amount', names='Category', hole=0.4, color_discrete_sequence=px.colors.qualitative.Pastel)
-            st.plotly_chart(fig, use_container_width=True)
+        # Apply Filters
+        filtered_df = df[df['Month_Year'] == selected_month]
+        if selected_view != "Combined Household":
+            filtered_df = filtered_df[filtered_df["User"] == selected_view]
+            budget_baseline = INCOME_INDIVIDUAL
         else:
-            st.warning(f"No transactions found for {selected_view}.")
-        
-        st.subheader("Recent Ledger Entries")
-        # Hide the ID column on the dashboard so it stays clean
-        display_clean = display_df.drop(columns=["ID"]).sort_values(by="Date", ascending=False)
-        st.dataframe(display_clean.head(10), use_container_width=True)
+            budget_baseline = INCOME_HOUSEHOLD
+            
+        total_spent = filtered_df["Amount"].sum()
+        remaining = budget_baseline - total_spent
+        percent_spent = min((total_spent / budget_baseline) * 100, 100)
 
-# --- PAGE 2: LOG TRANSACTION ---
-elif page == "Log Transaction":
-    st.title("📝 Quick Logger")
-    
-    with st.form("transaction_form"):
-        t_user = st.radio("Who made this transaction?", HOUSEHOLD_USERS, horizontal=True)
-        t_date = st.date_input("Date", date.today())
-        t_amount = st.number_input("Amount (₹)", min_value=0.0, step=100.0)
+        # --- High-Level KPIs ---
+        st.markdown("<br>", unsafe_allow_html=True)
+        kpi1, kpi2, kpi3 = st.columns(3)
+        kpi1.metric("Budget Ceiling", f"₹{budget_baseline:,}")
+        kpi2.metric("Total Spent", f"₹{total_spent:,.2f}")
+        kpi3.metric("Remaining Pool", f"₹{remaining:,.2f}", delta=f"{-total_spent:,.0f} spent", delta_color="inverse")
+
+        # --- Progress Bar ---
+        st.write(f"**Monthly Budget Consumption:** {percent_spent:.1f}%")
+        st.progress(int(percent_spent))
+        st.markdown("<br>", unsafe_allow_html=True)
+
+        # --- Visual Analytics ---
+        chart_col1, chart_col2 = st.columns(2)
         
-        if not category_list:
-            st.warning("You have no categories! Go to 'Manage Categories' to add some.")
-            t_cat = None
-        else:
-            t_cat = st.selectbox("Category", category_list)
+        with chart_col1:
+            st.write("### Spending by Compartment")
+            if not filtered_df.empty:
+                cat_sum = filtered_df.groupby("Category")["Amount"].sum().reset_index()
+                fig_pie = px.pie(cat_sum, values='Amount', names='Category', hole=0.4)
+                fig_pie.update_layout(margin=dict(t=0, b=0, l=0, r=0))
+                st.plotly_chart(fig_pie, use_container_width=True)
+            else:
+                st.write("No spending this month.")
+
+        with chart_col2:
+            st.write("### Daily Spending Trend")
+            if not filtered_df.empty:
+                daily_sum = filtered_df.groupby(filtered_df['Date'].dt.day)["Amount"].sum().reset_index()
+                daily_sum.rename(columns={'Date': 'Day of Month'}, inplace=True)
+                fig_bar = px.bar(daily_sum, x='Day of Month', y='Amount', text_auto='.2s')
+                fig_bar.update_layout(margin=dict(t=0, b=0, l=0, r=0), xaxis_title="Day of the Month", yaxis_title="Amount Spent (₹)")
+                st.plotly_chart(fig_bar, use_container_width=True)
+            else:
+                st.write("No daily trend data available.")
+
+# ==========================================
+# TAB 2: LOG EXPENSE
+# ==========================================
+with tab_log:
+    st.subheader("Add a New Transaction")
+    with st.form("transaction_form", clear_on_submit=True): # Form clears automatically!
+        col_l1, col_l2 = st.columns(2)
+        with col_l1:
+            t_user = st.radio("Spender", HOUSEHOLD_USERS, horizontal=True)
+            t_date = st.date_input("Date", date.today())
+        with col_l2:
+            t_amount = st.number_input("Amount (₹)", min_value=0.0, step=100.0)
+            t_cat = st.selectbox("Category", category_list) if category_list else None
             
         t_notes = st.text_input("Notes / Vendor Name")
+        submitted = st.form_submit_button("Save Transaction", type="primary", use_container_width=True)
         
-        submitted = st.form_submit_button("Save Transaction")
-        
-        if submitted and t_cat:
-            save_transaction(t_date, t_amount, t_cat, t_notes, t_user)
-            st.success(f"Successfully logged ₹{t_amount} for {t_user} under '{t_cat}'!")
+        if submitted:
+            if t_amount > 0 and t_cat:
+                save_transaction(t_date, t_amount, t_cat, t_notes, t_user)
+                st.success(f"✅ Successfully logged ₹{t_amount} for {t_user}!")
+                st.rerun()
+            else:
+                st.error("Please enter an amount greater than 0.")
 
-# --- PAGE 3: MANAGE LEDGER (Delete Option) ---
-elif page == "Manage Ledger":
-    st.title("🗑️ Manage Ledger")
-    
+# ==========================================
+# TAB 3: MANAGE LEDGER
+# ==========================================
+with tab_ledger:
+    st.subheader("Audit & Delete Transactions")
     if df.empty:
-        st.info("No transactions to manage.")
+        st.info("Ledger is empty.")
     else:
-        st.markdown("Select a transaction below to permanently delete it.")
+        # Display clean dataframe
+        df_clean = df.copy()
+        df_clean['Date'] = df_clean['Date'].dt.strftime('%Y-%m-%d') # Format for display
+        df_sorted = df_clean.sort_values(by=["Date", "ID"], ascending=[False, False])
         
-        # Sort so newest is at the top
-        df_sorted = df.sort_values(by=["ID"], ascending=False)
+        st.dataframe(df_sorted.drop(columns=["Month_Year"], errors='ignore'), use_container_width=True)
         
+        st.markdown("### Delete a Record")
         def format_tx(row):
-            return f"ID {row.ID} | {row.Date} | {row.User} | ₹{row.Amount} | {row.Category} | {row.Notes}"
+            return f"{row.Date} | {row.User} | ₹{row.Amount} | {row.Category} | {row.Notes}"
             
         tx_options = {row.ID: format_tx(row) for row in df_sorted.itertuples()}
-        
-        selected_id = st.selectbox(
-            "Select Transaction to Delete", 
-            options=list(tx_options.keys()), 
-            format_func=lambda x: tx_options[x]
-        )
+        selected_id = st.selectbox("Select Transaction to Delete", options=list(tx_options.keys()), format_func=lambda x: tx_options[x])
         
         if st.button("Delete Selected Transaction", type="primary"):
             delete_transaction(selected_id)
-            st.success("Transaction deleted successfully!")
+            st.success("Transaction permanently removed!")
             st.rerun()
-            
-        st.markdown("---")
-        st.write("### Full Database View")
-        st.dataframe(df_sorted, use_container_width=True)
 
-# --- PAGE 4: MANAGE CATEGORIES ---
-elif page == "Manage Categories":
-    st.title("⚙️ Manage Categories")
-    st.markdown("Double-click a cell to edit a name. Scroll to the bottom to add a new one. Select a row on the left to delete it.")
+# ==========================================
+# TAB 4: SETTINGS
+# ==========================================
+with tab_settings:
+    st.subheader("Customize Categories")
+    st.info("Double-click a cell to rename. Scroll to the bottom to add. Select the row number on the left and press delete on your keyboard to remove.")
     
     edited_df = st.data_editor(df_cat, num_rows="dynamic", use_container_width=True)
     
-    if st.button("Save Changes"):
+    if st.button("Save Categories", type="primary"):
         edited_df = edited_df.dropna(subset=["Category"])
         edited_df = edited_df[edited_df["Category"].str.strip() != ""]
         save_categories(edited_df)
-        st.success("Categories updated successfully!")
+        st.success("Categories updated! The changes are now live.")
+        st.rerun()
+    
